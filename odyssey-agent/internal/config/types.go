@@ -3,6 +3,7 @@ package config
 type Config struct {
     Services map[string]string `yaml:"services"`
     Registry map[string]TargetConfig `yaml:"registry"`
+    Workers  int `yaml:"workers"`
 }
 
 type TargetConfig struct {
@@ -20,3 +21,4 @@ type FailureConfig struct {
     Notify        string `yaml:"notify"`
     WaitForInput  bool   `yaml:"wait_for_input"`
 }
+

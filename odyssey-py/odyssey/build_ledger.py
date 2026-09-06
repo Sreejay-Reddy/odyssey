@@ -7,66 +7,96 @@ class BuildLedger:
         self.key = key
         self.steps = steps
 
-    def run(self):
-        
-        conn = self.get_conn()
+    async def run(self):
+
         ledger_rows = []
         delivery_rows = []
 
-        try:
-            for sequence, step in enumerate(self.steps, start=1):
+        for sequence, step in enumerate(self.steps, start=1):
 
-                if step.delegate:
-                    delivery_rows.append((self.key, step.target, step.delegate))
-                    ledger_rows.append((self.key, step.target, sequence, "delegated", Jsonb(step.kwargs)))
-                else:
-                    ledger_rows.append((self.key, step.target, sequence, "local", Jsonb(step.kwargs)))
+            mode = "delegated" if step.delegate else "local"
 
-            with conn.cursor() as cur:
-                cur.executemany("""
-                INSERT INTO odyssey_ledger(
-                key,
-                target,
-                sequence,
-                mode,
-                input,
-                expires_at
+            ledger_rows.append(
+                (
+                    self.key,
+                    step.target,
+                    sequence,
+                    mode,
+                    Jsonb(step.kwargs),
                 )
-                VALUES(%s,%s,%s,%s,%s, NOW() - INTERVAL '1 millisecond')
-                """, ledger_rows, )
-
-                cur.executemany("""
-                INSERT INTO odyssey_deliveries(
-                key,
-                target,
-                emit_to
-                )
-                VALUES(%s, %s, %s)
-                """, delivery_rows, )
-
-            conn.commit()
-
-            return BuildLedgerResult(
-                key=self.key,
-                targets=[
-                    step.target
-                    for step in self.steps
-                ],
-                delegated=[
-                    step.target
-                    for step in self.steps
-                    if step.delegate
-                ],
-                local=[
-                    step.target
-                    for step in self.steps
-                    if not step.delegate
-                ]
             )
 
-        except Exception as e:
-            conn.rollback()
-            raise RuntimeError("Failed to build ledger") from e
+            if step.delegate:
+                delivery_rows.append(
+                    (
+                        self.key,
+                        step.target,
+                        step.delegate,
+                    )
+                )
 
-        finally:
-            conn.close()
+        async with self.get_conn() as conn:
+            try:
+                async with conn.cursor() as cur:
+
+                    # Parent ledger
+                    await cur.execute(
+                        """
+                        INSERT INTO odyssey_ledger(key)
+                        VALUES(%s)
+                        """,
+                        (self.key,),
+                    )
+
+                    # Individual journeys
+                    await cur.executemany(
+                        """
+                        INSERT INTO odyssey_journeys(
+                            key,
+                            target,
+                            sequence,
+                            mode,
+                            input
+                        )
+                        VALUES(%s, %s, %s, %s, %s)
+                        """,
+                        ledger_rows,
+                    )
+
+                    # Delegated deliveries
+                    if delivery_rows:
+                        await cur.executemany(
+                            """
+                            INSERT INTO odyssey_deliveries(
+                                key,
+                                target,
+                                emit_to
+                            )
+                            VALUES(%s, %s, %s)
+                            """,
+                            delivery_rows,
+                        )
+
+                await conn.commit()
+
+                return BuildLedgerResult(
+                    key=self.key,
+                    targets=[
+                        step.target
+                        for step in self.steps
+                    ],
+                    delegated=[
+                        step.target
+                        for step in self.steps
+                        if step.delegate
+                    ],
+                    local=[
+                        step.target
+                        for step in self.steps
+                        if not step.delegate
+                    ],
+                )
+
+            except Exception as e:
+                await conn.rollback()
+                raise RuntimeError("Failed to build ledger") from e

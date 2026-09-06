@@ -1,89 +1,126 @@
 import asyncio
+import socket
+from multiprocessing import Process
+from .utils import decode_message
 from .execute import Execute
-
-class Job:
-    def __init__(self, key, target, future):
-        self.key = key
-        self.target = target
-        self.future = future
-
+import time
 
 class Worker:
-    def __init__(self, queue, get_conn, registry):
-        self.queue = queue
-        self.get_conn = get_conn
+    def __init__(self, worker_id, socket, registry):
+        self.worker_id= worker_id
+        self.socket = socket
         self.registry = registry
 
+    async def recv_exactly(self, size):
+        loop = asyncio.get_running_loop()
+        data = bytearray()
+
+        while len(data) < size:
+            chunk = await loop.sock_recv(
+                self.socket,
+                size - len(data),
+            )
+
+            if not chunk:
+                raise ConnectionError("agent disconnected")
+
+            data.extend(chunk)
+
+        return bytes(data)
+
     async def run(self):
-        while True:
-            job = await self.queue.get()
+        self.socket.setblocking(False)
 
-            try:
-                registered = self.registry.get(job.target)
+        try:
+            while True:
+                header = await self.recv_exactly(4)
+                size = int.from_bytes(header, "big")
 
-                execution = Execute(
-                    get_conn=self.get_conn,
-                    key=job.key,
-                    target=job.target,
-                    fn=registered.fn,
-                    ttl_ms=registered.ttl_ms,
-                )
+                data = await self.recv_exactly(size)
+                message = decode_message(data)
 
-                result = await execution.run()
+                for execution in message.executions:
+                    asyncio.create_task(
+                        Execute(
+                            execution.key, 
+                            execution.target_id,
+                            execution.input,
+                            self.registry
+                        ).run()
+                    )
+        except asyncio.CancelledError:
+            raise
 
-                job.future.set_result(result)
+        except ConnectionError:
+            pass
 
-            except Exception as e:
-                job.future.set_exception(e)
+        finally:
+            self.socket.close()
 
-            finally:
-                self.queue.task_done()
+    def worker_process(self):
+        asyncio.run(self.run())
+
+    def stop(self):
+        self.socket.close()
 
 
 class WorkerPool:
-    def __init__(self, worker_count, get_conn, registry):
-        self.get_conn = get_conn
+    def __init__(self, registry, workers):
+        self.workers = workers
         self.registry = registry
+        self.processes = []
+        self.worker_instances = []
 
-        self.queue = asyncio.Queue()
-        self.workers = []
-        self.tasks = []
+    def connect_worker(self, worker_id):
+        path = f"/tmp/odyssey/{worker_id}.sock"
 
-        for _ in range(worker_count):
-            worker = Worker(
-                self.queue,
-                self.get_conn,
-                self.registry,
+        while True:
+            sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+            try:
+                sock.connect(path)
+                return sock
+            except ConnectionRefusedError:
+                sock.close()
+                time.sleep(1)
+
+
+    def create_workers(self):
+        for worker in range(self.workers):
+            worker_id = f"worker-{worker}"
+
+            sock = self.connect_worker(worker_id)
+
+            worker_instance = Worker(
+                worker_id=worker_id, 
+                socket=sock,
+                registry=self.registry
             )
 
-            self.workers.append(worker)
+            process = Process(
+                target=worker_instance.worker_process,
+            )
+            process.start()
 
-    def start(self):
-        for worker in self.workers:
-            task = asyncio.create_task(worker.run())
-            self.tasks.append(task)
+            self.worker_instances.append(worker_instance)
+            self.processes.append(process)
 
-    async def stop(self):
-        for task in self.tasks:
-            task.cancel()
+            sock.close()
 
-        await asyncio.gather(
-            *self.tasks,
-            return_exceptions=True,
-        )
-        
-        self.tasks.clear()
+    def wait(self):
+        for process in self.processes:
+            process.join()
 
-    async def publish(self, key, target):
-        loop = asyncio.get_running_loop()
-        future = loop.create_future()
+    def stop(self):
+        for worker in self.worker_instances:
+            worker.stop()
 
-        job = Job(
-            key=key,
-            target=target,
-            future=future,
-        )
+        for process in self.processes:
+            if process.is_alive():
+                process.terminate()
 
-        await self.queue.put(job)
+        for process in self.processes:
+            process.join()
 
-        return await future
+        self.worker_instances.clear()
+        self.processes.clear()
