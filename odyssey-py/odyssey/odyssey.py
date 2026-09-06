@@ -1,18 +1,13 @@
-import psycopg
 from psycopg_pool import AsyncConnectionPool
-import asyncio
-import selectors
-import sys
 import os
-import uvicorn
+import asyncio
+import threading
 from .config import load_config
 from .build_ledger import BuildLedger
 from .register import Register
-from .server import OdysseyServer
-from .cli import print_startup
+from .workers import WorkerPool
 from .environment import load_environment
 from .db import async_init_db as async_initialize_db
-from .db import init_db as sync_initialize_db
 
 class Step:
     def __init__(
@@ -27,10 +22,11 @@ class Step:
         self.kwargs = dict(kwargs)
 
 class Odyssey:
-    def __init__(self, db_url=None, pool_size=20, config=None, default_ttl_ms=10000, namespace=None):
-        self.default_ttl_ms = default_ttl_ms
+    def __init__(self, db_url=None, pool_size=5, workers=1, config=None, namespace=None):
         self.namespace = namespace
         self.pool_size = pool_size
+        self._pool_open = False
+        self._stop_event = threading.Event()
         
         if config is None:
             self.config, self.config_path = load_config()
@@ -52,6 +48,11 @@ class Odyssey:
 
         self.db_url = db_url
 
+        self.worker_pool = WorkerPool(
+            registry=self._register,
+            workers=workers
+        )
+
         self.pool = AsyncConnectionPool(
             conninfo=self.db_url,
             min_size=self.pool_size,
@@ -59,35 +60,26 @@ class Odyssey:
             open=False,
         )
 
-    def _sync_conn(self):
-        return psycopg.connect(self.db_url)
-
-    async def _async_conn(self):
-        return await self.pool.connection()
-
-    def _ttl(self, ttl_ms):
-        return ttl_ms if ttl_ms is not None else self.default_ttl_ms
+    def _async_conn(self):
+        return self.pool.connection()
 
     def _key(self, key):
         return f"{self.namespace}:{key}" if self.namespace else key
 
-    def init_db(self):
-        conn = self._sync_conn()
-
-        try:
-            sync_initialize_db(conn)
-        finally:
-            conn.close()
+    async def _ensure_pool(self):
+        if not self._pool_open:
+            await self.pool.open()
+            await self.pool.wait()
+            self._pool_open = True
 
     async def async_init_db(self):
-        conn = await self._async_conn()
 
-        try:
+        await self._ensure_pool()
+
+        async with self._async_conn() as conn:
             await async_initialize_db(conn)
-        finally:
-            await conn.close()
 
-    def build_ledger(self, key, steps):
+    async def abuild_ledger(self, key, steps):
 
         if not isinstance(key, str):
             raise TypeError(
@@ -125,7 +117,7 @@ class Odyssey:
                     "target cannot be empty."
                 )
             
-            if step.delegate is None and not self._register.exists(step.target):
+            if step.delegate is None and not self._register.exists_by_name(step.target):
                 raise ValueError(
                     f"Unknown target '{step.target}' and the Step is not delegated"
                 )
@@ -151,82 +143,44 @@ class Odyssey:
                     )
         
         key = self._key(key)
+
+        await self._ensure_pool()
         
         builder = BuildLedger(
-            get_conn = self._sync_conn,
+            get_conn = self._async_conn,
             key=key,
             steps=steps
         )
 
-        return builder.run()
+        return await builder.run()
 
-    def register(self, target, fn, ttl_ms = None):
+    def build_ledger(self, key, steps):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(self.abuild_ledger(key, steps))
 
-        ttl_ms = self._ttl(ttl_ms)
+        raise RuntimeError(
+            "build_ledger() cannot be called from a running event loop; "
+            "use await abuild_ledger() instead."
+        )
+
+    def register(self, target, fn):
 
         return self._register.register(
             target=target,
-            fn=fn,
-            ttl_ms=ttl_ms
+            fn=fn
         )
 
-    def serve(self, host="127.0.0.1", port=8765):
-        print_startup(self)
-
-        server = OdysseyServer(
-            registry=self._register,
-            pool=self.pool,
-        )
-
-        config = uvicorn.Config(
-            server.app,
-            host=host,
-            port=port,
-
-            loop="auto",
-            http="httptools",
-
-            access_log=False,
-
-            backlog=2048,
-            timeout_keep_alive=30,
-
-            limit_concurrency=None,
-            limit_max_requests=None,
-        )
-
-        uvicorn_server = uvicorn.Server(config)
-
-        if sys.platform == "win32":
-            loop = asyncio.SelectorEventLoop(
-                selectors.SelectSelector()
-            )
-            asyncio.set_event_loop(loop)
-
-        else:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
+    async def _start(self):
+        self.worker_pool.create_workers()
 
         try:
-            loop.run_until_complete(
-                self.pool.open()
-            )
-
-            loop.run_until_complete(
-                self.pool.wait()
-            )
-
-            loop.run_until_complete(
-                uvicorn_server.serve()
-            )
-
+            self.worker_pool.wait()
+        except KeyboardInterrupt:
+            pass
         finally:
-            loop.run_until_complete(
-                self.pool.close()
-            )
+            self.worker_pool.stop()
 
-            loop.run_until_complete(
-                loop.shutdown_asyncgens()
-            )
-
-            loop.close()
+    def start(self):
+        asyncio.run(self._start())
