@@ -3,6 +3,8 @@ package socket
 import(
 	"net"
 	"fmt"
+	"time"
+	"context"
 	"path/filepath"
 )
 
@@ -14,23 +16,35 @@ const(
 const SocketDir = "/tmp/odyssey"
 
 
-func createSocket(path string) (net.Conn, error){
-	conn, err := net.Dial("unix", path)
-	if err != nil{
-		return nil, err
-	}
+func createSocket(ctx context.Context, path string) (net.Conn, error) {
+	var dialer net.Dialer
 
-	return conn, nil
+	for {
+		conn, err := dialer.DialContext(ctx, "unix", path)
+		if err == nil {
+			return conn, nil
+		}
+
+		timer := time.NewTimer(time.Second)
+
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return nil, ctx.Err()
+
+		case <-timer.C:
+		}
+	}
 }
 
-func CreateWorkerSockets(workers int) ([]net.Conn, error) {
+func CreateWorkerSockets(ctx context.Context, workers int) ([]net.Conn, error) {
 	sockets := make([]net.Conn, 0, workers)
 
 	for worker := 0; worker < workers; worker++ {
 		workerID := fmt.Sprintf("worker-%d", worker)
 		path := filepath.Join(SocketDir, workerID+".sock")
 
-		conn, err := createSocket(path)
+		conn, err := createSocket(ctx, path)
 		if err != nil {
 			for _, socket := range sockets {
 				socket.Close()
@@ -49,10 +63,10 @@ func CreateWorkerSockets(workers int) ([]net.Conn, error) {
 	return sockets, nil
 }
 
-func CreateAckSocket() (net.Conn, error) {
-	return createSocket(AckPath)
+func CreateAckSocket(ctx context.Context) (net.Conn, error) {
+	return createSocket(ctx, AckPath)
 }
 
-func CreateResultSocket() (net.Conn, error) {
-	return createSocket(ResultPath)
+func CreateResultSocket(ctx context.Context) (net.Conn, error) {
+	return createSocket(ctx, ResultPath)
 }

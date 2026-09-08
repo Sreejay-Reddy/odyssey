@@ -13,6 +13,12 @@ type Registry struct {
 	byName map[string]*Registered
 }
 
+type RegistryMessage struct {
+	SDKID      [16]byte
+	SessionID  [16]byte
+	Registry   []Registered
+}
+
 func New() *Registry {
 	return &Registry{
 		byID:   make(map[uint32]*Registered),

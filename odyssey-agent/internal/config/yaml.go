@@ -8,7 +8,7 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-func FindYAML() (string, error) {
+func FindConfig() (string, error) {
 	dir, err := os.Getwd()
 	if err != nil {
 		return "", err
@@ -33,7 +33,7 @@ func FindYAML() (string, error) {
 	return "", errors.New("odyssey.yaml not found")
 }
 
-func ReadYAML(path string) (Config, error) {
+func LoadConfigYAML(path string) (Config, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return Config{}, err

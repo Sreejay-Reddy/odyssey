@@ -1,11 +1,65 @@
 package batcher
 
-import(
-	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/transport/socket"
+import (
+	"context"
+	"sync/atomic"
+	"time"
+
+	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/storage"
 )
 
-func BatchPostgres(msg socket.Message){
-	for _, execution := range msg.Executions{
-		print(execution)
-	}
+type Batcher struct {
+    writer   storage.Writer
+    limit    int
+    interval time.Duration
+    nextID   atomic.Uint64
+}
+
+type Batch struct {
+    ID         uint64
+    Executions []storage.Execution
+}
+
+func New(
+    writer storage.Writer,
+    limit int,
+    interval time.Duration,
+) *Batcher {
+    return &Batcher{
+        writer:   writer,
+        limit:    limit,
+        interval: interval,
+    }
+}
+
+func (b *Batcher) Next(ctx context.Context, workerID string) (Batch, error) {
+    for {
+        executions, err := b.writer.Acquire(
+            ctx,
+            workerID,
+            b.limit,
+        )
+        if err != nil {
+            return Batch{}, err
+        }
+
+        if len(executions) > 0 {
+            batchID := b.nextID.Add(1)
+
+            return Batch{
+                ID: batchID,
+                Executions: executions,
+            }, nil
+        }
+
+        timer := time.NewTimer(b.interval)
+
+        select {
+        case <-ctx.Done():
+            timer.Stop()
+            return Batch{}, ctx.Err()
+
+        case <-timer.C:
+        }
+    }
 }

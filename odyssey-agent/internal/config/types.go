@@ -3,7 +3,7 @@ package config
 type Config struct {
     Services map[string]string `yaml:"services"`
     Registry map[string]TargetConfig `yaml:"registry"`
-    Workers  int `yaml:"workers"`
+    Agent AgentConfig `yaml:"agent"`
 }
 
 type TargetConfig struct {
@@ -20,5 +20,19 @@ type RetryConfig struct {
 type FailureConfig struct {
     Notify        string `yaml:"notify"`
     WaitForInput  bool   `yaml:"wait_for_input"`
+}
+
+type AgentConfig struct {
+    SDK SDKConfig `yaml:"sdk"`
+    Postgres PostgresConfig `yaml:"postgres"`
+}
+
+type SDKConfig struct {
+    Workers  int `yaml:"workers"`
+    BatchSize int `yaml:"batchsize"`
+}
+
+type PostgresConfig struct {
+	PoolSize int32 `yaml:"pool_size"`
 }
 

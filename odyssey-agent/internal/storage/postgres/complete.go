@@ -7,7 +7,7 @@ import(
 	"github.com/jackc/pgx/v5"
 )
 
-func (w *Writer) complete(ctx context.Context, executions []storage.Execution) error {
+func (w *Writer) Complete(ctx context.Context, executions []storage.Execution) error {
 	batch := &pgx.Batch{}
 
 	for _, e := range executions {
@@ -27,7 +27,7 @@ func (w *Writer) complete(ctx context.Context, executions []storage.Execution) e
 		)
 	}
 
-	results := w.conn.SendBatch(ctx, batch)
+	results := w.pool.SendBatch(ctx, batch)
 	defer results.Close()
 
 	for i := range executions {
@@ -49,7 +49,6 @@ func (w *Writer) complete(ctx context.Context, executions []storage.Execution) e
 			}
 		}else{
 			rows.Close()
-			e.Status = "complete_failed"
 		}
 	}
 

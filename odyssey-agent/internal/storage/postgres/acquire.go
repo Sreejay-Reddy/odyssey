@@ -7,9 +7,53 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
+func (w *Writer) Acquire(
+	ctx context.Context,
+	workerID string,
+	limit int,
+) ([]storage.Execution, error) {
+	tx, err := w.pool.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
 
+	rows, err := tx.Query(ctx, `
+		SELECT key, target, input
+		FROM odyssey_journeys
+		WHERE status = 'queued'
+		ORDER BY key
+		LIMIT $1
+		FOR UPDATE SKIP LOCKED
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
 
-func (w *Writer) acquire(ctx context.Context, executions []storage.Execution) error {
+	var executions []storage.Execution
+
+	for rows.Next() {
+		var e storage.Execution
+
+		if err := rows.Scan(
+			&e.Key,
+			&e.Target,
+			&e.Input,
+		); err != nil {
+			rows.Close()
+			return nil, err
+		}
+
+		e.WorkerID = workerID
+		executions = append(executions, e)
+	}
+
+	rows.Close()
+
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
 	batch := &pgx.Batch{}
 
 	for _, e := range executions {
@@ -21,8 +65,7 @@ func (w *Writer) acquire(ctx context.Context, executions []storage.Execution) er
 				status = 'claimed',
 				worker_id = $1
 			 WHERE key = $2
-				AND target = $3
-				AND status = 'queued'
+			   AND target = $3
 			 RETURNING input, status, attempts`,
 			e.WorkerID,
 			e.Key,
@@ -30,7 +73,7 @@ func (w *Writer) acquire(ctx context.Context, executions []storage.Execution) er
 		)
 	}
 
-	results := w.conn.SendBatch(ctx, batch)
+	results := tx.SendBatch(ctx, batch)
 	defer results.Close()
 
 	for i := range executions {
@@ -38,25 +81,32 @@ func (w *Writer) acquire(ctx context.Context, executions []storage.Execution) er
 
 		rows, err := results.Query()
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		if rows.Next() {
-			err := rows.Scan(
+			if err := rows.Scan(
 				&e.Input,
 				&e.Status,
 				&e.Attempts,
-			)
-			rows.Close()
-
-			if err != nil {
-				return err
+			); err != nil {
+				rows.Close()
+				return nil, err
 			}
-		}else{
-			rows.Close()
+		} else {
 			e.Status = "acquire_failed"
 		}
-}
 
-	return nil
+		rows.Close()
+	}
+
+	if len(executions) == 0 {
+        return executions, nil
+    }
+
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+
+	return executions, nil
 }

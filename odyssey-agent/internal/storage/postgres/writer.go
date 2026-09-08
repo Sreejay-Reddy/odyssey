@@ -1,19 +1,19 @@
 package postgres
 
 import (
-	"github.com/jackc/pgx/v5"
-	
+	"github.com/jackc/pgx/v5/pgxpool"
+
 	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/config"
 )
 
 type Writer struct {
-	conn *pgx.Conn
-	cfg config.Config
+	pool *pgxpool.Pool
+	cfg  config.Config
 }
 
-func New(conn *pgx.Conn, cfg config.Config) *Writer {
+func New(pool *pgxpool.Pool, cfg config.Config) *Writer {
 	return &Writer{
-		conn: conn,
-		cfg: cfg,
+		pool: pool,
+		cfg:  cfg,
 	}
 }
