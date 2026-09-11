@@ -4,11 +4,13 @@ import (
 	"context"
 
 	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/storage"
+	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/registry"
 	"github.com/jackc/pgx/v5"
 )
 
 func (w *Writer) Acquire(
 	ctx context.Context,
+	registry *registry.Registry,
 	workerID string,
 	limit int,
 ) ([]storage.Execution, error) {
@@ -45,6 +47,13 @@ func (w *Writer) Acquire(
 		}
 
 		e.WorkerID = workerID
+
+		registred, err := registry.GetByName(e.Target)
+		if err != nil {
+			return nil, err
+		}
+		e.TTLMS = registred.TTLMS
+
 		executions = append(executions, e)
 	}
 
@@ -64,10 +73,12 @@ func (w *Writer) Acquire(
 				attempts = attempts + 1,
 				status = 'claimed',
 				worker_id = $1
-			 WHERE key = $2
-			   AND target = $3
+				expires_at = now() + ($2 * interval '1 millisecond') + (interval '30 second')
+			 WHERE key = $3
+			   AND target = $4
 			 RETURNING input, status, attempts`,
 			e.WorkerID,
+			e.TTLMS,
 			e.Key,
 			e.Target,
 		)

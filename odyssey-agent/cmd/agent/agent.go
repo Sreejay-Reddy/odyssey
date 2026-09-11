@@ -1,25 +1,27 @@
 package main
 
 import (
-	"os/signal"
-	"syscall"
 	"context"
 	"errors"
-	"time"
+	"log/slog"
+	"net"
 	"os"
-	
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/batcher"
 	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/config"
 	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/registry"
 	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/scheduler"
+	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/server"
+	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/storage"
 	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/storage/postgres"
 	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/transport/socket"
 )
 
 func runBatchLoop (ctx context.Context, 
 	sch *scheduler.Scheduler, 
-	postgres *postgres.Writer,
 	r *registry.Registry, 
 	batchclient *batcher.Batcher) (error) {
 	for {
@@ -40,14 +42,14 @@ func runBatchLoop (ctx context.Context,
 
 		for _, claim := range batch.Executions {
 
-			registred, err := r.GetByName(claim.Target)
+			registered, err := r.GetByName(claim.Target)
 			if err != nil {
 				return err
 			}
 
 			execute := socket.Execution{
 				Key : claim.Key,
-				TargetID : registred.TargetID,
+				TargetID : registered.TargetID,
 				Input : claim.Input,
 			}
 			msg.Executions = append(msg.Executions, execute)
@@ -55,12 +57,46 @@ func runBatchLoop (ctx context.Context,
 
 		encodedMSG := socket.EncodeMessage(msg)
 
-		_, err = worker.Conn.Write(encodedMSG)
-		if err != nil {
-			return  err
-		}
+		worker.Send<- encodedMSG
 
 	}
+}
+
+func runCompleteLoop (ctx context.Context, 
+	resultconn net.Conn, 
+	batchclient *batcher.Batcher,
+	r *registry.Registry) (error) {
+		for {
+			header, err := socket.ReadHeader(resultconn)
+			if err != nil {
+				return err
+			}
+
+			result, err := socket.DecodeResult(header)
+			if err != nil {
+				return err
+			}
+
+			executions := make([]storage.Execution, 0, len(result.Executions))
+
+			for _, execution := range result.Executions {
+
+				registered, err := r.GetByID(execution.TargetID)
+				if err != nil {
+					return err
+				}
+
+				executed := storage.Execution {
+					Key: execution.Key,
+					Target: registered.Target,
+					ExecutionResult: execution.ExecutionResult,
+				}
+
+				executions = append(executions, executed)
+			}
+
+			go batchclient.BatchComplete(ctx, executions)
+		}
 }
 
 func run () (error) {
@@ -76,6 +112,8 @@ func run () (error) {
 		return errors.New("DATABASE_URL not set")
 	}
 
+	slog.Info("Database", "db_url", dbURL)
+
 	path, err := config.FindConfig()
 	if err != nil {
 		return err
@@ -87,6 +125,13 @@ func run () (error) {
 	}
 
 	ackconn, err := socket.CreateAckSocket(ctx)
+	if err != nil {
+		return err
+	}
+
+	slog.Info("connected")
+
+	resultconn, err := socket.CreateResultSocket(ctx)
 	if err != nil {
 		return err
 	}
@@ -108,7 +153,17 @@ func run () (error) {
 		return err
 	}
 
-	sch := scheduler.NewScheduler(workerconns)
+	sends := make([]chan<- []byte, len(workerconns))
+
+	for i, conn := range workerconns {
+		send := make(chan []byte, 64)
+
+		go socket.RunWriter(ctx, conn, send)
+
+		sends[i] = send
+	}
+
+	sch := scheduler.NewScheduler(workerconns, sends)
 
 	pool, err := postgres.NewPool(ctx, cfg.Agent.Postgres, dbURL)
 	if err != nil {
@@ -116,16 +171,44 @@ func run () (error) {
 	}
 
 	writer := postgres.New(pool, cfg)
-	batchclient := batcher.New(writer,	64, time.Duration(1)*time.Second)
+	batchclient := batcher.New(writer, r, 64, time.Duration(1)*time.Second)
 
 	go func(){
-		err := runBatchLoop(ctx, sch, writer, r, batchclient)
+		err := runBatchLoop(ctx, sch, r, batchclient)
 		if err != nil {
 			stop()
 		}
 	}()
 
+	go func(){
+		err := runCompleteLoop(ctx, resultconn, batchclient, r)
+		if err != nil {
+			stop()
+		}
+	}()
+
+	s := server.New(":8080")
+
+	go func(){
+		err := s.Start()
+		if err != nil {
+			s.Shutdown(ctx)
+		}
+	}()
+
 	<-ctx.Done()
 
-	return nil
+	shutdownCtx, cancel := context.WithTimeout(
+		context.Background(),
+		5*time.Second,
+	)
+	defer cancel()
+
+	return s.Shutdown(shutdownCtx)
+}
+
+func main() {
+	if err := run(); err != nil {
+		panic(err)
+	}
 }

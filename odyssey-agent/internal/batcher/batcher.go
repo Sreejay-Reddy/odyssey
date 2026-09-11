@@ -5,11 +5,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/registry"
 	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/storage"
 )
 
 type Batcher struct {
     writer   storage.Writer
+    registry *registry.Registry
     limit    int
     interval time.Duration
     nextID   atomic.Uint64
@@ -22,11 +24,13 @@ type Batch struct {
 
 func New(
     writer storage.Writer,
+    registry *registry.Registry,
     limit int,
     interval time.Duration,
 ) *Batcher {
     return &Batcher{
         writer:   writer,
+        registry: registry,
         limit:    limit,
         interval: interval,
     }
@@ -36,6 +40,7 @@ func (b *Batcher) Next(ctx context.Context, workerID string) (Batch, error) {
     for {
         executions, err := b.writer.Acquire(
             ctx,
+            b.registry,
             workerID,
             b.limit,
         )
@@ -62,4 +67,13 @@ func (b *Batcher) Next(ctx context.Context, workerID string) (Batch, error) {
         case <-timer.C:
         }
     }
+}
+
+func (b *Batcher) BatchComplete(ctx context.Context, executions []storage.Execution) (error) {
+    err := b.writer.Complete(ctx, executions)
+    if err != nil {
+        return err
+    }
+    
+    return nil
 }

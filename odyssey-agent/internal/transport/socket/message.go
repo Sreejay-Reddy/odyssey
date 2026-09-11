@@ -1,5 +1,9 @@
 package socket
 
+import (
+	"encoding/json"
+)
+
 
 const (
 	ProtocolVersion uint8 = 1
@@ -36,6 +40,7 @@ type Message struct {
 type ResultExecution struct {
 	Key      string
 	TargetID uint32
+	ExecutionResult json.RawMessage
 	Status   ExecutionStatus
 }
 
