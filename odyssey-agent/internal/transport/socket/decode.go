@@ -6,6 +6,7 @@ import (
 	"net"
 	"errors"
 	"encoding/binary"
+	"encoding/json"
 
 	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/registry"
 )
@@ -75,11 +76,14 @@ func DecodeRegistry(conn net.Conn, r *registry.Registry, buf []byte) error {
         target := string(buf[offset : offset+targetLength])
         offset += targetLength
 
-        // Register immediately
+		ttlms := binary.BigEndian.Uint32(buf[offset:])
+        offset += 4
+
         err := r.Add(registry.Registered{
             Target:       target,
             FunctionName: target,
             TargetID:     targetID,
+			TTLMS: 		  ttlms,
         })
         if err != nil {
             return err
@@ -152,9 +156,24 @@ func DecodeResult(buf []byte) (Result, error) {
 		status := ExecutionStatus(buf[offset])
 		offset++
 
+		if offset+4 > len(buf) {
+			return Result{}, fmt.Errorf("truncated result payload length")
+		}
+
+		resultLength := int(binary.BigEndian.Uint32(buf[offset:]))
+		offset += 4
+
+		if offset+resultLength > len(buf) {
+			return Result{}, fmt.Errorf("truncated result payload")
+		}
+
+		executionResult := json.RawMessage(buf[offset : offset+resultLength])
+		offset += resultLength
+
 		result.Executions = append(result.Executions, ResultExecution{
 			Key:      key,
 			TargetID: targetID,
+			ExecutionResult: executionResult,
 			Status:   status,
 		})
 	}

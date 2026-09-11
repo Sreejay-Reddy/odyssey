@@ -10,6 +10,7 @@ type Execution struct {
 	WorkerID string
 	Status    string
 	Attempts  int
+	TTLMS 	  uint32
 	Input     json.RawMessage
 	ExecutionResult json.RawMessage
 }

@@ -6,6 +6,7 @@ DO $$
 BEGIN
     CREATE TYPE odyssey_status AS ENUM (
 		'queued',
+        'failed',
         'claimed',
         'completed',
         'reconciling'

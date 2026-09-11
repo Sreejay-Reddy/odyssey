@@ -6,6 +6,7 @@ type Registered struct {
 	Target       string
 	FunctionName string
 	TargetID     uint32
+	TTLMS		 uint32
 }
 
 type Registry struct {
