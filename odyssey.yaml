@@ -5,6 +5,14 @@ services:
   name2: url2
   nameN: urlN
 
+
+agent:
+    sdk:
+        workers: 4
+        batchsize: 64
+    postgres:
+        pool_size: 15
+
 registry:
   default:
     retry:
