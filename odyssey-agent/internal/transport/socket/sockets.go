@@ -37,12 +37,15 @@ func createSocket(ctx context.Context, path string) (net.Conn, error) {
 	}
 }
 
-func CreateWorkerSockets(ctx context.Context, workers int) ([]net.Conn, error) {
+func CreateWorkers(ctx context.Context, workers int) ([]net.Conn, []net.Conn, error) {
 	sockets := make([]net.Conn, 0, workers)
+	eventSockets := make([]net.Conn, 0, workers)
 
 	for worker := 0; worker < workers; worker++ {
 		workerID := fmt.Sprintf("worker-%d", worker)
+		resultWorkerID := fmt.Sprintf("result-%d", worker)
 		path := filepath.Join(SocketDir, workerID+".sock")
+		resultPath := filepath.Join(SocketDir, resultWorkerID+".sock")
 
 		conn, err := createSocket(ctx, path)
 		if err != nil {
@@ -50,7 +53,20 @@ func CreateWorkerSockets(ctx context.Context, workers int) ([]net.Conn, error) {
 				socket.Close()
 			}
 
-			return nil, fmt.Errorf(
+			return nil, nil, fmt.Errorf(
+				"failed to connect worker socket %s: %w",
+				workerID,
+				err,
+			)
+		}
+
+		eventconn, err := createSocket(ctx, resultPath)
+		if err != nil {
+			for _, eventsocket := range eventSockets {
+				eventsocket.Close()
+			}
+
+			return nil, nil, fmt.Errorf(
 				"failed to connect worker socket %s: %w",
 				workerID,
 				err,
@@ -58,15 +74,12 @@ func CreateWorkerSockets(ctx context.Context, workers int) ([]net.Conn, error) {
 		}
 
 		sockets = append(sockets, conn)
+		eventSockets = append(eventSockets, eventconn)
 	}
 
-	return sockets, nil
+	return sockets, eventSockets, nil
 }
 
 func CreateAckSocket(ctx context.Context) (net.Conn, error) {
 	return createSocket(ctx, AckPath)
-}
-
-func CreateResultSocket(ctx context.Context) (net.Conn, error) {
-	return createSocket(ctx, ResultPath)
 }

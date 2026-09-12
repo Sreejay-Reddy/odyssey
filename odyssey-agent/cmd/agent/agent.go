@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"os"
@@ -15,9 +16,10 @@ import (
 	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/registry"
 	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/scheduler"
 	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/server"
-	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/storage"
 	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/storage/postgres"
 	"github.com/sreejay-reddy/odyssey/odyssey-agent/internal/transport/socket"
+
+	"gopkg.in/yaml.v3"
 )
 
 func runBatchLoop (ctx context.Context, 
@@ -62,43 +64,6 @@ func runBatchLoop (ctx context.Context,
 	}
 }
 
-func runCompleteLoop (ctx context.Context, 
-	resultconn net.Conn, 
-	batchclient *batcher.Batcher,
-	r *registry.Registry) (error) {
-		for {
-			header, err := socket.ReadHeader(resultconn)
-			if err != nil {
-				return err
-			}
-
-			result, err := socket.DecodeResult(header)
-			if err != nil {
-				return err
-			}
-
-			executions := make([]storage.Execution, 0, len(result.Executions))
-
-			for _, execution := range result.Executions {
-
-				registered, err := r.GetByID(execution.TargetID)
-				if err != nil {
-					return err
-				}
-
-				executed := storage.Execution {
-					Key: execution.Key,
-					Target: registered.Target,
-					ExecutionResult: execution.ExecutionResult,
-				}
-
-				executions = append(executions, executed)
-			}
-
-			go batchclient.BatchComplete(ctx, executions)
-		}
-}
-
 func run () (error) {
     ctx, stop := signal.NotifyContext(
         context.Background(),
@@ -124,17 +89,21 @@ func run () (error) {
 		return err
 	}
 
+	yamlData, err := yaml.Marshal(cfg)
+	if err != nil {
+		slog.Error("failed to marshal config", "error", err)
+		return nil
+	}
+
+	slog.Info("Odyssey.yaml config")
+	fmt.Print(string(yamlData))
+
 	ackconn, err := socket.CreateAckSocket(ctx)
 	if err != nil {
 		return err
 	}
 
-	slog.Info("connected")
-
-	resultconn, err := socket.CreateResultSocket(ctx)
-	if err != nil {
-		return err
-	}
+	slog.Info("connected ack socket")
 
 	msgSize, err := socket.ReadHeader(ackconn)
 	if err != nil {
@@ -148,14 +117,16 @@ func run () (error) {
 		return err
 	}
 
-	workerconns, err := socket.CreateWorkerSockets(ctx, cfg.Agent.SDK.Workers)
+	commandConns, eventConns, err := socket.CreateWorkers(ctx, cfg.Agent.SDK.Workers)
 	if err != nil { 
 		return err
 	}
 
-	sends := make([]chan<- []byte, len(workerconns))
+	slog.Info("Starting Workers....", "Workers", cfg.Agent.SDK.Workers)
 
-	for i, conn := range workerconns {
+	sends := make([]chan<- []byte, len(commandConns))
+
+	for i, conn := range commandConns {
 		send := make(chan []byte, 64)
 
 		go socket.RunWriter(ctx, conn, send)
@@ -163,7 +134,7 @@ func run () (error) {
 		sends[i] = send
 	}
 
-	sch := scheduler.NewScheduler(workerconns, sends)
+	sch := scheduler.NewScheduler(commandConns, eventConns, sends)
 
 	pool, err := postgres.NewPool(ctx, cfg.Agent.Postgres, dbURL)
 	if err != nil {
@@ -180,12 +151,18 @@ func run () (error) {
 		}
 	}()
 
-	go func(){
-		err := runCompleteLoop(ctx, resultconn, batchclient, r)
-		if err != nil {
-			stop()
-		}
-	}()
+	for _, eventconn := range eventConns {
+		go socket.RunEventReader(ctx, eventconn, batchclient, r)
+	}
+
+	for _, eventConn := range eventConns {
+		go func(conn net.Conn) {
+			err := socket.RunEventReader(ctx, conn, batchclient, r)
+			if err != nil {
+				stop()
+			}
+		}(eventConn)
+	}
 
 	s := server.New(":8080")
 
@@ -198,17 +175,37 @@ func run () (error) {
 
 	<-ctx.Done()
 
+	slog.Info("shutting down agent")
+
 	shutdownCtx, cancel := context.WithTimeout(
 		context.Background(),
 		5*time.Second,
 	)
 	defer cancel()
 
-	return s.Shutdown(shutdownCtx)
+	err = s.Shutdown(shutdownCtx)
+	if err != nil {
+		return err
+	}
+
+	pool.Close()
+
+	for _, conn := range commandConns {
+		conn.Close()
+	}
+
+	for _, conn := range eventConns {
+		conn.Close()
+	}
+
+	slog.Info("agent shutdown gracefully")
+
+	return nil
 }
 
 func main() {
-	if err := run(); err != nil {
+	err := run() 
+	if err != nil {
 		panic(err)
 	}
 }

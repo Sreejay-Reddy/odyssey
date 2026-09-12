@@ -14,6 +14,10 @@ func NewPool(ctx context.Context, cfg config.PostgresConfig, dsn string,) (*pgxp
 		return nil, err
 	}
 
+	if cfg.PoolSize == 0 {
+		cfg.PoolSize = 10
+	}
+
 	poolConfig.MaxConns = cfg.PoolSize
 	poolConfig.MinConns = cfg.PoolSize
 

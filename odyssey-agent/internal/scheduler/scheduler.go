@@ -14,20 +14,22 @@ type Scheduler struct {
 
 type Worker struct {
 	ID   string
-	Conn net.Conn
+	Command net.Conn
+	Event net.Conn
 	Send chan<- []byte
 }
 
-func NewScheduler(conns []net.Conn, sends []chan<- []byte) *Scheduler {
-	workers := make([]Worker, len(conns))
+func NewScheduler(commands []net.Conn, events []net.Conn, sends []chan<- []byte) *Scheduler {
+	workers := make([]Worker, len(commands))
 
-	for i, conn := range conns {
-		workers[i] = Worker{
-			ID:   fmt.Sprintf("worker-%d", i),
-			Conn: conn,
-			Send: sends[i],
-		}
-	}
+    for i := range commands {
+        workers[i] = Worker{
+            ID:      fmt.Sprintf("worker-%d", i),
+            Command: commands[i],
+            Event:   events[i],
+            Send:    sends[i],
+        }
+    }
 
 	return &Scheduler{
 		workers: workers,
