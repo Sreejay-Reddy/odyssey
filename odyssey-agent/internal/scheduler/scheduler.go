@@ -45,3 +45,7 @@ func (s *Scheduler) Next() Worker {
 	
 	return worker
 }
+
+func (s *Scheduler) Workers() []Worker {
+	return s.workers
+}

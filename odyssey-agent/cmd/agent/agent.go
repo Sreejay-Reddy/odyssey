@@ -23,11 +23,10 @@ import (
 )
 
 func runBatchLoop (ctx context.Context, 
-	sch *scheduler.Scheduler, 
+	worker scheduler.Worker, 
 	r *registry.Registry, 
 	batchclient *batcher.Batcher) (error) {
 	for {
-		worker := sch.Next()
 
 		batch, err := batchclient.Next(ctx, worker.ID)
 		if err != nil {
@@ -142,23 +141,28 @@ func run () (error) {
 	}
 
 	writer := postgres.New(pool, cfg)
-	batchclient := batcher.New(writer, r, 64, time.Duration(1)*time.Second)
 
-	go func(){
-		err := runBatchLoop(ctx, sch, r, batchclient)
-		if err != nil {
-			stop()
-		}
-	}()
+	if cfg.Agent.SDK.BatchSize == 0 {
+		cfg.Agent.SDK.BatchSize = 128
+	}
 
-	for _, eventconn := range eventConns {
-		go socket.RunEventReader(ctx, eventconn, batchclient, r)
+	batchclient := batcher.New(writer, r, cfg.Agent.SDK.BatchSize, time.Duration(1)*time.Second)
+
+	for _, worker := range sch.Workers() {
+		go func(){
+		err := runBatchLoop(ctx, worker, r, batchclient)
+			if err != nil {
+				slog.Error("batch loop failed", "error", err)
+				stop()
+			}
+		}()
 	}
 
 	for _, eventConn := range eventConns {
 		go func(conn net.Conn) {
 			err := socket.RunEventReader(ctx, conn, batchclient, r)
 			if err != nil {
+				slog.Error("Event Reader failed", "error", err)
 				stop()
 			}
 		}(eventConn)
@@ -169,6 +173,7 @@ func run () (error) {
 	go func(){
 		err := s.Start()
 		if err != nil {
+			slog.Error("server failed", "error", err)
 			s.Shutdown(ctx)
 		}
 	}()
