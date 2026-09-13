@@ -25,7 +25,7 @@ func RunEventReader(ctx context.Context,
 				return err
 			}
 
-			result, err := DecodeResult(header)
+			result, err := DecodeResult(resultconn, header)
 			if err != nil {
 				return err
 			}

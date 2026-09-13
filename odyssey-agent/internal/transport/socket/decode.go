@@ -93,20 +93,19 @@ func DecodeRegistry(conn net.Conn, r *registry.Registry, buf []byte) error {
     return nil
 }
 
-func DecodeResult(buf []byte) (Result, error) {
-	const headerSize = 4 + 1 + 16 + 16 + 8 + 4
+func DecodeResult(conn net.Conn ,buf []byte) (Result, error) {
+	_, err := io.ReadFull(conn, buf)
+	if err != nil {
+		return Result{}, err
+	}
+
+	const headerSize = 1 + 16 + 16 + 8 + 4
 
 	if len(buf) < headerSize {
 		return Result{}, fmt.Errorf("result too short")
 	}
 
-	frameLength := binary.BigEndian.Uint32(buf[:4])
-
-	if int(frameLength) != len(buf)-4 {
-		return Result{}, fmt.Errorf("invalid result frame length")
-	}
-
-	offset := 4
+	offset := 0
 
 	result := Result{}
 

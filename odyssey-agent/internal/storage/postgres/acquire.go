@@ -24,7 +24,6 @@ func (w *Writer) Acquire(
 		SELECT key, target, input
 		FROM odyssey_journeys
 		WHERE status = 'queued'
-		ORDER BY key
 		LIMIT $1
 		FOR UPDATE SKIP LOCKED
 	`, limit)
@@ -72,7 +71,7 @@ func (w *Writer) Acquire(
 				started_at = NOW(),
 				attempts = attempts + 1,
 				status = 'claimed',
-				worker_id = $1
+				worker_id = $1,
 				expires_at = now() + ($2 * interval '1 millisecond') + (interval '30 second')
 			 WHERE key = $3
 			   AND target = $4
@@ -114,6 +113,10 @@ func (w *Writer) Acquire(
 	if len(executions) == 0 {
         return executions, nil
     }
+
+	if err := results.Close(); err != nil {
+		return nil, err
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err

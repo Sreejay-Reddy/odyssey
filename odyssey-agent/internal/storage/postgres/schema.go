@@ -53,6 +53,7 @@ CREATE TABLE IF NOT EXISTS odyssey_journeys (
     worker_id TEXT,
     started_at TIMESTAMPTZ,
     completed_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ,
     input JSONB,
     execution_result JSONB,
     status odyssey_status NOT NULL DEFAULT 'queued',

@@ -39,6 +39,7 @@ odysseyenv/
 dvenv/
 test-app/
 local-tests/
+test-folder/
 
 # Python cache
 __pycache__/
